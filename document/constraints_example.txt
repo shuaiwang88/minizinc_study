@@ -9,8 +9,8 @@ s[i] = (sum(j in 0..n-1)(bool2int(s[j]=i))));
 
 var int: obj = sum(i,j in NUM where i < j)(dist[i,j]);
 
-/\ : and 
-\/: or 
+/\ : and
+\/: or
 constraint forall(j in DAY)(
 sum(i in NURSE)(roster[i,j] == d) == req_day /\
 sum(i in NURSE)(roster[i,j] == n) == req_night
@@ -73,5 +73,3 @@ s[k,j] + d[k,j] <= s[i,j]
 
 constraint forall(i in 0..n-1) (
 s[i] = (sum(j in 0..n-1)(bool2int(s[j]=i))));
-
-
