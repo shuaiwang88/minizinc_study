@@ -96,7 +96,7 @@ var float: objective = sum(f in ShiftSet)(ShiftScheduling[f]) +
 
 constraint 
 forall(t in TimeSet, k in TemperatureSet) (
-sum( s, t in TimeSet where s < t /\ s >= (t - MaxPickDelay[k]))(
+sum( s in TimeSet where s < t /\ s >= (t - MaxPickDelay[k]))(
     PickScheduling[s,k,t] + OverPickScheduling[s,k,t]) >= Demand[t,k]);
 
 
