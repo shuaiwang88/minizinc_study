@@ -1,0 +1,5 @@
+ShiftSet = {to_enum(ShiftSet)};
+Window_Start = {to_array(PickWindow)};
+Demand = {to_matrix(demand)};
+Shift_Map = {to_matrix(ShiftMap)};
+Shift_Len = {to_array(ShiftMap_LEN)};
