@@ -15,17 +15,21 @@
 %   How many pickers needed for each shift plan.
 %
 % Todo: 
-%   1. individual level weekly plan: stackoverflow.com/questions/48278879/minizinc-array-of-multidimensional-array
-%
+%   1. individual level weekly plan:
+% stackoverflow.com/questions/48278879/minizinc-array-of-multidimensional-array
+%   
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %              Define sets
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-/* 1. set of time in hour */    
+/* 1. set of time in hour and day */    
 %  s, t	index of hour set T, where T = {1,.,24}
 set of int:  Hour = 1..24;
+
+/* d is the index of set Day or D, where D = {1,.,7} */
+set of int: Day = 1..7;
 
 /* 2. temperature zone set */  
 % k	index of zone set K, where K = {1,.,4} {Ambient, Deli, Frozen, Refrigerated}
@@ -36,6 +40,10 @@ set of int:  Zone = 1..4;
 % can be 8 hours full shift, and part time shift like 6, 4 hours 
 % defined as a enumerated set in .dzn file and this can be store dependdent.
 enum ShiftSet;
+
+/* 4. picker set */
+enum PickerSet;
+
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %            Define picking parameters
@@ -73,7 +81,8 @@ array[Hour] of float: Attending;
 array[ShiftSet] of float: Shift_Len;
 
 /* 6. A(ft): 0-1 Matrix representation of set F */
-array[ShiftSet, Hour] of int: Shift_Map;
+/* array[ShiftSet, Hour] of int: Shift_Map; */
+array[PickerSet, Day, ShifSet, Hour] of int: Shift_Map;
 
 /* 7. ratio of full time to part time */
 float: Ratio_Full_to_Part = 3;
@@ -112,9 +121,11 @@ array[Hour, Zone, Hour] of var 0..Max_Pick_per_Hour: PickScheduling;
 array[Hour, Zone, Hour] of var 0..Max_Pick_per_Hour: OverPickScheduling;
 
 /* 3. X(f): the number of pickers assigned to shift f */  
-int: Max_Picker_per_Hour = 100;
-array[ShiftSet] of var 0..Max_Picker_per_Hour: Shift_Assign;
+/* int: Max_Picker_per_Hour = 100; */
+/* array[ShiftSet] of var 0..Max_Picker_per_Hour: Shift_Assign; */
 
+/* 3. 3darray X(p,d,f) whether to assign the shift to picker on day with shift asked. */
+array[PickerSet, Day, ShiftSet] of var bool: Shift_Assign;
 
 /* 4.  I(tk): the number of inventory (in orders) in zone k at in delivery time t. */ 
 % not used
@@ -133,12 +144,16 @@ array[ShiftSet] of var 0..Max_Picker_per_Hour: Shift_Assign;
 %            Define Objective 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Minimize: number of picker used + penalty on temporary pickers + penalty on invertory
-var float: objective = 
-  sum(f in ShiftSet)(Shift_Assign[f] * Shift_Len[f]) +
-  penalty_temp_picker * sum(s in Hour, k in Zone, t in Hour)(OverPickScheduling[s,k,t]);
+/* var float: objective = */ 
+/*   sum(f in ShiftSet)(Shift_Assign[f] * Shift_Len[f]) + */
+/*   penalty_temp_picker * sum(s in Hour, k in Zone, t in Hour)(OverPickScheduling[s,k,t]); */
 %   + penalty_inventory * sum(k in Zone, i in Hour)(Inventory[k,i]); % not used
 
 
+var float: objective = 
+  sum(p in PickerSet, d in Day, f in ShiftSet)
+            (Shift_Assign[p,d,f] * Shift_Len[f]) +
+  penalty_temp_picker * sum(s in Hour, k in Zone, t in Hour)(OverPickScheduling[s,k,t]);
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %           Define Constraints 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -148,20 +163,30 @@ var float: objective =
 % ∑(t≥s+1)∑(k in K) P_stk ≤  ∑(f in F)(A(f,t) * Xf)  for all s in T
 float: Picking_Efficiency;
 
-constraint
-forall(s in Hour) (
-   sum(k in Zone, t in Hour ) %where t >= s+ 1)
-      (PickScheduling[s,k,t]) / Picking_Efficiency + Attending[s] <= 
-        sum(f in ShiftSet)(Shift_Map[f,s] * Shift_Assign[f]));
+/* constraint */
+/* forall(s in Hour) ( */
+/*    sum(k in Zone, t in Hour ) %where t >= s+ 1) */
+/*       (PickScheduling[s,k,t]) / Picking_Efficiency + Attending[s] <= */ 
+/*         sum(f in ShiftSet)(Shift_Map[f,s] * Shift_Assign[f])); */
 
 
-/* 2. limit the number of temperary pickers --NOT ACTIVE */
-% ∑(t=s+1)∑(k in K) O_stk ≤ O(max)    for all s in T 
+/* 1. limit the available permanent picker in any hour period to the */
+%  number of pickers scheduled
+% ∑(t≥s+1)∑(k in K) P_stk ≤  ∑(p in P, f in F)(A(p,d,f,s) * X(p,d,f)) 
+%                                              for all d in Day, s in Hour
 constraint
-forall(s in Hour) (
-   sum(k in Zone, t in Hour where t >= s+ 1)(OverPickScheduling[s,k,t]) <= 
-   Max_Temp_Pickers
-  );
+forall(d in Day, s in Hour) (
+   sum(t in hour, k in zone) 
+      (pickscheduling[s,k,t]) / picking_efficiency + attending[s] <= 
+        sum(p in PickerSet, f in shiftset)(
+                            shift_map[p,d,f,s] * shift_assign[p,d,f]));
+
+/* 2. limit the number of temperary pickers --not active */
+% ∑(t=s+1)∑(k in k) o_stk ≤ o(max)    for all s in t 
+constraint
+forall(s in hour) (
+   sum(k in zone, t in hour where t >= s+ 1)(overpickscheduling[s,k,t]) <= 
+   Max_Temp_Pickers);
   
 
 % /* Only picking forward in time */
@@ -170,6 +195,9 @@ forall(s in Hour) (
 
 
 /* 3. Demand satisfication */
+
+%todo any changes to the demand to 7 * 24? 
+
 % IndexDomain: (t,k);
 % Definition: 
 % sum(s | (s < t) and (s >= (t - Window_Start(k))), 
@@ -187,15 +215,25 @@ forall(t in Hour, k in Zone) (
 /* 4. Limit part-time shifts */
 % ∑(f in F|L(f)≤6) X(f) ≤  Ratio_Part_to_Full*∑(f in F|L(f)>6)X(f)    
 
+/* constraint */
+/* sum(f in ShiftSet where Shift_Len[f] > Hour_Part) */
+/*    (Shift_Assign[f]) >= */ 
+/*    Ratio_Full_to_Part*sum(f in ShiftSet where Shift_Len[f] <= Hour_Part) */
+/*    (Shift_Assign[f]); */
+
+
+/* 4. Limit part-time shifts */
+∑(p in PickerSet, f in F|L(f)≤6) X(p,d,f) ≤
+                Ratio_Part_to_Full*∑(p in PickerSet, f in F|L(f)>6)X(p,d,f)    
+
 constraint
-sum(f in ShiftSet where Shift_Len[f] > Hour_Part)
-   (Shift_Assign[f]) >= 
-   Ratio_Full_to_Part*sum(f in ShiftSet where Shift_Len[f] <= Hour_Part)
-   (Shift_Assign[f]);
-
-
+sum(p in PickerSet, f in ShiftSet where Shift_Len[f] > Hour_Part)
+   (Shift_Assign[p,d,f]) >= 
+  Ratio_Full_to_Part*
+sum(p in PickerSet, f in ShiftSet where Shift_Len[f] <= Hour_Part)
+   (Shift_Assign[p,d,f]);
 /* 4b. Non-loitering */
-% constraint forall(f in ShiftSet, s in Hour diff {1} where Shift_Assign[f] > 0)(
+%constraint forall(f in ShiftSet, s in Hour diff {1} where Shift_Assign[f] > 0)(
 %   Shift_Map[f, s] > Shift_Map[f, s-1] -> 
 %     sum(t in Hour, k in Zone)(PickScheduling[s,k,t]) + Attending[s] > 0);
  
