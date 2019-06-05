@@ -124,8 +124,8 @@ solve_mz <- function(model, data = NULL, solver = "osicbc") {
 # dzn <- glue(dzn)
 # 
 # # 
-# # mzn <- read_file("clicklist_minizinc.mzn")
-# # dzn <- read_file("clicklist_minizinc-data.dzn")
+# # mzn <- read_file("minizinc.mzn")
+# # dzn <- read_file("minizinc-data.dzn")
 # # 
 # res <- solve_mz(mzn, dzn)
 
