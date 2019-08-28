@@ -1,8 +1,4 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% Clicklist Labor Optmization Model.
-% Author:
-%   Model: Xinhui.Zhang, Isaac Hampton
-%   Implementation: Shuai Wang (Minizinc), Eugene Pyatigorsky (Data processing)
 %
 % Goal: create daily staffing plan for clicklist picker. 
 % Reqiurement: 
