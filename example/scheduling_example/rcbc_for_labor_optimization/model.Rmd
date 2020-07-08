@@ -1,0 +1,846 @@
+---
+title: "Staging Shift Schedule for GPC Ci305"
+author: "Shuai Wang & Aaron Makubuya"
+date: "4/20/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Problem statement
+The staging/unstaging work is done by dedicated personnel.
+
+The job is basically unload the totes on the trolley, and merge the totes with the same order numer.   
+
+# Requirment
+To determine the staffing lever for each shift to meet the delivery demand. 
+
+# Input:
+1. hourly demand in orders from 8am to 8pm.
+Conversion from numer of orders to labor hours reqiured.
+$$\text{labor_hours} = \text{#orders * avg_totes_per_order * avg_tote_time/3600 }$$
+For example:
+We have 100 orders for 8am. The avg_totes_per_order is 6 totes, and 
+the avg_tote_time is 30 seconds per tote.
+
+The required labor_hours for staging is estimated as:
+$100*6*30/3600=5 hours$
+
+So, for 100 orders, we need 5 labor hours to fill.
+
+<!-- # Model -->
+<!-- ## Set and parameter -->
+
+<!--   1. $S:$ shift sets which comprised of full time and part time workers. indexed by s. -->
+
+<!--   2. $H:$ 1 to 24 hour, indexed by i,j -->
+
+<!--   3. $length_s$: the length of each shift, such as 8hours, 6hours -->
+
+<!--   4. $\text{shift_map}_{is}$: 0-1 matrix mapping the shift with hours -->
+
+<!--   5. $demand_j$: labor hours demand for each delivery hour -->
+
+<!-- ## Variable -->
+<!-- 1. $y_s$: how many staff do we need for each shift. -->
+
+<!-- 2. $x_{ij}$ the number of hours spent on the stagging at hour i for hour j. -->
+<!-- This has to be synced with the picking activity.  -->
+
+<!-- ## Objective -->
+<!-- Minimizing the total labor hours: -->
+<!-- $$\min \sum \limits_{s}^{S} \text{length}_{s} * y_s $$ -->
+<!-- ## Constraint -->
+<!-- 1. The stagging activity meet the demand.  -->
+
+<!-- $$\sum \limits_{j-4 <= i <=j-1}^{24} x_{ij} = Demand_j,   \forall j \in H$$ -->
+<!-- 2. The number of scheduled workers are greater than the sum of each hour's activities.  -->
+
+<!-- $$\sum \limits_{j}^{24} x_{ij}/ \text{efficency} \le  \sum \limits_{s}^{S} shift_{is}*y_{s} , i \in  1 \ldots 24$$ -->
+
+<!-- 3. maintain 70% full time and 30% part time shift -->
+<!-- $$  ∑(s \in S|Length(s)≤6) y_s ≤ \text{Ratio_Part_to_Full}*∑(s \in S|length(s)>6)y_s     $$ -->
+```{r include=FALSE}
+library(tidyverse)
+library(ROI)
+#library(ROI.plugin.glpk) # Solver or calculator
+library(ROI.plugin.cbc)
+library(ompr) # the math modeling language
+library(ompr.roi)
+library(DT)
+library(plotly)
+library(glue)
+```
+
+
+```{r include=FALSE}
+orders_up  <- 150
+# orders_low <- 100
+# From 1 to 24
+#order_demand <- rep(orders_up, 13) # 8am to 8pm 13
+
+# order_demand <- c(59, 59, 49, 56, 100, 59, 99, 59, 69, 54, 50, 50, 50)
+ 
+order_demand <- c(80,80,120,120,120,130,130,130,130,130,110,100,90,30)
+
+# order_demand <-c(46,59,58,75,85,96,54,54,43,48,43,33,13,0)
+order_demand <- append(order_demand, c(0,0,0,0,0,0,0),
+                               after =0) # 1am to 7am
+# order_demand <- append(order_demand, c(0,0,0,0),
+#                                after =20) # 9pm to midnight
+
+order_demand <- append(order_demand, c(0,0,0),
+                               after =21) # 10pm to midnight
+
+# 
+full_shift_set <- matrix(
+ c( # 4 hours shift 
+        0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, #3-6 
+        0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, #4-7  
+        0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, #5-8  
+        0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, #6-9  
+        0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0, #7-10 
+        0,0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0, #8-11 
+        0,0,0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0, #9-12 
+        0,0,0,0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0, #10-13 
+        0,0,0,0,0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0, #11-14
+        0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0, #12-15
+        0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0, #13-16
+        0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0, #14-17
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0, #15-18
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,0,0,0,0,0, #16-19
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,0,0,0,0, #17-20
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,0,0,0, #18-21
+        
+
+        # 5 hours shift
+        0,0,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, #3-7
+        0,0,0,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, #4-8    11
+        0,0,0,0,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, #5-9    12
+        0,0,0,0,0,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0, #6-10   13
+        0,0,0,0,0,0,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0, #7-11   14
+        0,0,0,0,0,0,0,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0, #8-12   15
+        0,0,0,0,0,0,0,0,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0, #9-13   17
+        0,0,0,0,0,0,0,0,0,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0, #10-14  18 
+        0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,0,0,0,0,0,0,0,0,0, #11-15  19
+        0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,0,0,0,0,0,0,0,0, #12-16  20
+        0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,0,0,0,0,0,0,0, #13-17  21
+        0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,0,0,0,0,0,0, #14-18  22
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,0,0,0,0,0, #15-19  23
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,0,0,0,0, #16-20  24
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,0,0,0, #17-21  
+      
+       # 6 hours shift 
+        0,0,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, #3-8
+        0,0,0,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, #4-9   
+        0,0,0,0,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0, #5-10  
+        0,0,0,0,0,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0, #6-11  
+        0,0,0,0,0,0,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0, #7-12  
+        0,0,0,0,0,0,0,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0, #8-13  
+        0,0,0,0,0,0,0,0,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0, #9-14  
+        0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0, #10-15  
+        0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,0,0,0,0,0,0,0,0, #11-16 
+        0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,0,0,0,0,0,0,0, #12-17 
+        0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,0,0,0,0,0,0, #13-18 
+        0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,0,0,0,0,0, #14-19 
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,0,0,0,0, #15-20 
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,0,0,0, #16-21 
+       # 7 hours shift 
+        0,0,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, #3-9
+        0,0,0,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0, #4-10   
+        0,0,0,0,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0, #5-11  
+        0,0,0,0,0,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0, #6-12  
+        0,0,0,0,0,0,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0, #7-13  
+        0,0,0,0,0,0,0,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0, #8-14  
+        0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0, #9-15  
+        0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0, #10-16  
+        0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,0,0,0,0,0,0,0, #11-17 
+        0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,0,0,0,0,0,0, #12-18 
+        0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,0,0,0,0,0, #13-19 
+        0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,0,0,0,0, #14-20 
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,0,0,0, #15-21 
+       # 8 hours shift
+        0,0,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0, #3-10
+        0,0,0,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0, #4-11   1
+        0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0, #5-12   2
+        0,0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0, #6-13   3
+        0,0,0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0, #7-14   4
+        0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0, #8-15   5
+        0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0, #9-16   6
+        0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0, #10-17  7
+        0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0,0,0, #11-18  8
+        0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0,0, #12-19  9
+        0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0, #13-20  10
+        0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,0,0,0 #14-21  10
+        
+      ),ncol = 24,byrow = T)
+
+nshift = nrow(full_shift_set)
+shift_length = rowSums(full_shift_set)
+```
+```{r}
+set_ops_time <- function(operation_start_hour){
+  
+  store_para <- list()
+  
+  store_para$full_pick_start_hour   = operation_start_hour
+  store_para$full_pick_end_hour6    = 16
+  store_para$full_pick_end_hour7    = 15
+  store_para$full_pick_end_hour8    = 14
+  
+  
+  store_para$full_shift_len6        = 6
+  store_para$full_shift_len7        = 7
+  store_para$full_shift_len8        = 8
+  
+  store_para$part_pick_start_hour   = operation_start_hour
+  store_para$part_pick_end_hour4    = 18
+  store_para$part_pick_end_hour5    = 17
+  
+  
+  store_para$part_shift_len4        = 4
+  store_para$part_shift_len5        = 5
+  
+  return(store_para)
+}
+  
+
+
+# store operation list
+
+gen_shifts_matrix <- function(def) {
+  f <- function(x, dur) between(1:24, x, x + dur - 1) %>% as.integer()
+  full_seq(def$start_range, 1) %>% 
+    # {setNames(., sprintf("d%02ds%02d", def$duration, .))} %>% 
+    sapply(., f, def$duration) %>% 
+    t(.)
+}
+
+
+
+
+get_shifts_spec <- function(opt) {
+  # Generates a list of shifts with start hour range and duration from
+  # a flat file specification with columns names
+  list(
+    part_time_4 = list(
+      start_range = c(opt$part_pick_start_hour, opt$part_pick_end_hour4),
+      duration    = opt$part_shift_len4
+    ),
+    part_time_5 = list(
+      start_range = c(opt$part_pick_start_hour, opt$part_pick_end_hour5),
+      duration    = opt$part_shift_len5
+    ),
+    full_time_6  = list(
+      start_range = c(opt$full_pick_start_hour, opt$full_pick_end_hour6),
+      duration    = opt$full_shift_len6
+    ),
+    full_time_7  = list(
+      start_range = c(opt$full_pick_start_hour, opt$full_pick_end_hour7),
+      duration    = opt$full_shift_len7
+    ),
+    full_time_8  = list(
+      start_range = c(opt$full_pick_start_hour, opt$full_pick_end_hour8),
+      duration    = opt$full_shift_len8
+    )
+   
+  )
+}
+
+store_para <- set_ops_time(3)
+
+full_shift_set <- store_para %>%
+  get_shifts_spec(.) %>%
+  map(., gen_shifts_matrix) %>%
+  reduce(., rbind)
+
+
+```
+
+
+
+```{r include=FALSE}
+
+
+efficiency = 0.75
+Ratio_Full_to_Part = 5.5 
+lead_time = 5
+
+Staffing_optimizer  <- function(demand, 
+                                efficiency,
+                                Ratio_Full_to_Part, 
+                                lead_time,
+                                time_limit) {
+
+
+full_time_ind <- which(shift_length > 6)
+part_time_ind <- which(shift_length < 6)
+# efficiency = 1
+  
+model <- MIPModel() %>% 
+  add_variable(x[i,j], i= 1:24, j = 1:24, type = "continuous",  lb =0) %>% 
+  
+  add_variable(y[s], s = 1:nshift, type = "integer", lb = 0) %>%
+  
+  set_objective(sum_expr(y[s]*shift_length[s], 
+                         s = 1:nshift ), "min") %>% 
+ # picking labor hours should be less than scheduled #picker 
+  add_constraint(sum_expr(x[i,j] / efficiency, j =1:24, i >= j - lead_time, i < j-time_limit) <= 
+                 sum_expr(y[s] * full_shift_set[s,i], s = 1:nshift),
+                 i = 1:24) %>% 
+ # picking should meet the demand  
+  add_constraint(sum_expr(x[i,j], i = 1:24,  i >= j - lead_time, i < j- time_limit) == 
+                   demand[j],
+                 j = 1:24)  %>% 
+  # control the ration of full time 15% and part time 85%
+ add_constraint(sum_expr(y[s], s = part_time_ind) >=
+                 sum_expr(y[s], s = full_time_ind) * Ratio_Full_to_Part)
+
+
+result <- solve_model(model, with_ROI(solver = "cbc", max_time = 60))
+#result <- solve_model(model, with_ROI(solver = "cbc"))
+#result$objective_value
+return(result)
+}
+
+
+
+
+### run staging model
+avg_totes_per_order <- 6
+avg_time_per_totes <- 37
+
+Staging_demand <- order_demand * avg_totes_per_order * 
+  avg_time_per_totes/3600
+
+staging_result <- Staffing_optimizer(Staging_demand,
+                                     efficiency = 0.95,
+                                     Ratio_Full_to_Part = 5.5,
+                                     lead_time = 5,
+                                     time_limit = 1)
+
+
+### run picking model
+order_size <- 40 # average items in an order
+pick_rate  <- 58  # average seconds spent on picking 1 item
+Picking_demand <- order_demand * order_size * pick_rate / 3600 
+
+picking_result <- Staffing_optimizer(Picking_demand, 
+                                     efficiency = 0.95,
+                                     Ratio_Full_to_Part = 5.5,
+                                     lead_time = 5,
+                                     time_limit = 1)
+
+
+
+### run destaging model --------------------
+# destaging_time_per_order <- 0.17 # 0.17 hour 
+# destaging_demand <- order_demand * destaging_time_per_order 
+
+
+# distribution of 40%, 25%, 15%, 10%, 5%, 5% 
+# returns the number of stagers needed for each demand to maintain 5min waiting time
+# how many de-stager need for 
+destage_5min_service <- matrix(c(
+0, 0,
+10	,1,
+20	,2,
+30	,3,
+40	,3,
+50	,4,
+60	,4,
+70	,5,
+80	,6,
+90	,6,
+100, 7,
+110, 7,
+120, 8,
+130, 9,
+140, 9,
+150, 10,
+160, 10,
+170, 11,
+180, 12,
+190, 12,
+200, 13),
+ncol = 2, byrow = T) %>%
+  as_tibble()
+
+colnames(destage_5min_service) <- c("order", "staff")
+
+# use the staff as the labor demand 
+order_demand_destage <- tibble(order = order_demand) %>% 
+                               left_join(destage_5min_service) %>% 
+  select(staff) %>% unlist() %>% unname()
+  
+
+detage_demand <- tibble(order = round(order_demand+5, -1)) 
+
+destaging_optimizer <- function(demand,
+                                Ratio_Full_to_Part){
+
+  full_time_ind <- which(shift_length > 6)
+  part_time_ind <- which(shift_length < 6)
+  
+  Model <- MIPModel() %>% 
+    add_variable(y[s], s = 1:nshift, type = "integer", lb = 0) %>% 
+    set_objective(sum_expr(y[s] * shift_length[s], s=1:nshift), "min") %>% 
+    
+    add_constraint(sum_expr(y[s] * full_shift_set[s,i], s = 1:nshift) 
+                   >= demand[i], i = 1:24 ) %>% 
+    add_constraint(sum_expr(y[s], s = part_time_ind) >=
+                   sum_expr(y[s], s = full_time_ind) * Ratio_Full_to_Part)
+  
+  result <- solve_model(Model, with_ROI(solver = "cbc", max_time = 60))
+  return(result)
+}
+
+
+destaging_result <- destaging_optimizer(order_demand_destage,
+                                        Ratio_Full_to_Part = 5.5)
+
+Destaging_data <- destaging_result %>% 
+  get_solution(y[s]) %>%
+  filter(value > 0) 
+
+
+
+start <- rep(0, nrow(Destaging_data))
+end   <- rep(0, nrow(Destaging_data))
+for( i in 1:nrow(Destaging_data)){
+  shift_hour_index <- which(full_shift_set[Destaging_data$s[i],] == 1)
+  start[i]  = shift_hour_index[1]
+  end[i]    = shift_hour_index[length(shift_hour_index)]
+}
+Destaging_data$start <- start
+Destaging_data$end   <- end
+
+Destaging_data$variable <- NULL
+Destaging_data$s <- NULL
+colnames(Destaging_data) <- c(#'Shift_ind',
+                         'N_Staff', "Shift_Start_Time","Shift_End_Time"
+)
+
+
+```
+
+
+
+
+
+
+```{r echo=FALSE}
+Staging_data <- staging_result %>% 
+  get_solution(y[s]) %>%
+  filter(value > 0) 
+
+start <- rep(0, nrow(Staging_data))
+end   <- rep(0, nrow(Staging_data))
+for( i in 1:nrow(Staging_data)){
+  shift_hour_index <- which(full_shift_set[Staging_data$s[i],] == 1)
+  start[i]  = shift_hour_index[1]
+  end[i]    = shift_hour_index[length(shift_hour_index)]
+}
+Staging_data$start <- start
+Staging_data$end   <- end
+
+Staging_data$variable <- NULL
+Staging_data$s <- NULL
+colnames(Staging_data) <- c(#'Shift_ind',
+                         'N_Staff', "Shift_Start_Time","Shift_End_Time"
+)
+
+
+```
+
+## 4/20/2020 example
+
+
+```{r fig.width= 10,echo=FALSE}
+my_theme <- function(){
+  theme(plot.title = element_text(hjust = 0.5, face="bold", color="#34495E"),
+            axis.title.y = element_text(face="bold", color="#34495E", 
+                                        size=10),
+            axis.title.x = element_text(face="bold", color="#34495E", 
+                                        size=10),
+            axis.text.y = element_text(face="bold", color="#993333", 
+                                       size=10))
+}
+
+
+my_tibble <- tibble(
+  `Hour Of The Day` = as.integer(seq_len(24)),
+  `Order Demand` = order_demand,
+  `Required Hours` = round(Staging_demand,1),
+) 
+
+p <- my_tibble %>% 
+ggplot(aes(`Hour Of The Day`, `Order Demand`, fill = `Required Hours`,
+           text = paste("Hour: ",`Hour Of The Day`, 
+                        "<br />Demand: ",`Order Demand`,  
+                        "<br />Req Hrs: ",`Required Hours`
+                        ))) +
+  geom_bar(stat = "identity") +
+  ggtitle("Staging Shift Optimization \n Store ci305") +
+  scale_x_continuous(breaks = scales::pretty_breaks(12)) +
+  scale_fill_gradient(low = "red", high = "green") +
+  my_theme()
+
+
+ggplotly(p, tooltip = c("text")) 
+```
+
+
+
+
+
+***
+
+### Data
+
+- Belowe is a date of the data displayed in the plot above.
+
+```{r echo=FALSE, fig.width= 10}
+
+display_table <- t(
+  my_tibble %>%
+  select(2:3)
+)
+
+colnames(display_table) <- as.integer(seq_len(24))
+ 
+display_table %>%
+  as_tibble(rownames = "Hour") %>%
+ datatable(rownames = FALSE, options = list(scrollX = TRUE, searching= FALSE, paging = FALSE, bInfo = FALSE,
+                                            class = 'cell-border stripe', columnDefs = list(list(className = 'dt-center', targets = 0:23))))
+```
+
+
+
+
+
+
+***
+
+### Staging Recommendation
+
+- The graphic below displays number of staging optimization information.
+
+- Hovering over a shift will display information about the shift staging requirements.
+
+***
+***
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE, fig.width= 10}
+cols <- RColorBrewer::brewer.pal(length(unique(Staging_data$Shift_Start_Time)), name = 'Set3') 
+Staging_data$color <- factor(Staging_data$Shift_Start_Time)
+
+Staging_data$Shift_End_Time <- Staging_data$Shift_End_Time + 1
+
+p <- plot_ly()
+
+f <- list(
+  family= "Courier",
+  size = 19
+)
+
+X <- list(
+  title = "Hour of The day",
+  titlefont = f,
+  showline = T,
+  linecolor = "black"
+)
+
+
+Y <-list(
+  title = "Shift",
+  titlefont = f,
+  autotick = F, 
+  dtick = c(1,4),
+  showline = T,
+  linecolor = "black"
+)
+  
+for(i in 1:(nrow(Staging_data))){
+  p <- add_trace(p,
+                 x = c(Staging_data$Shift_Start_Time[i], Staging_data$Shift_End_Time[i]), 
+                 y =c(i),
+                 mode = "lines",
+                 line = list(color = Staging_data$color[i], width = 20),
+                 showlegend = F,
+                 hoverinfo = "text",
+                 text = paste("Start: ", Staging_data$Shift_Start_Time[i], "<br>",
+                              "End: ", Staging_data$Shift_End_Time[i], "<br>",
+                              "N_Staff: ", Staging_data$N_Staff[i], "<br>"),
+                 evaluate = T
+  ) %>%
+    layout(title = "Staging Recommendation By Shift", 
+           xaxis = X, 
+           yaxis = Y
+           ) %>%
+    config(displayModeBar = F)
+    
+}
+
+p
+```
+
+
+- Shift 1 represent disctinct start and end times for staging operations for full time staff throughout the day.
+
+- Shift 2 through 6 represent disctinct start and end times for staging operations  for part time staff throughout the day.
+
+- The model currently recommends one staff for the entire day due to low demand.
+
+
+***
+***
+
+### Data 
+
+- Below is a table that contains the recommended number of staff per shift.
+
+```{r echo=FALSE, fig.width= 10}
+Staging_data %>%
+  select(-color) %>%
+  datatable(rownames = FALSE, options = list(scrollX = TRUE, searching= FALSE, paging = FALSE, bInfo = FALSE,
+                                            class = 'cell-border stripe', columnDefs = list(list(className = 'dt-center'))))
+```
+
+
+
+
+
+### Picking Recommendation
+
+- The graphic below displays number of picking optimization information
+
+- Hovering over a shift will display information about the shift picking requirements.
+
+***
+***
+
+
+```{r echo=FALSE}
+Pickin_data <- picking_result %>% 
+  get_solution(y[s]) %>%
+  filter(value > 0) 
+
+start <- rep(0, nrow(Pickin_data))
+end   <- rep(0, nrow(Pickin_data))
+for( i in 1:nrow(Pickin_data)){
+  shift_hour_index <- which(full_shift_set[Pickin_data$s[i],] == 1)
+  start[i]  = shift_hour_index[1]
+  end[i]    = shift_hour_index[length(shift_hour_index)]
+}
+Pickin_data$start <- start
+Pickin_data$end   <- end
+
+Pickin_data$variable <- NULL
+Pickin_data$s <- NULL
+colnames(Pickin_data) <- c(#'Shift_ind',
+                         'N_Staff', "Shift_Start_Time","Shift_End_Time"
+)
+
+```
+
+
+
+```{r message=FALSE, echo=FALSE, warning=FALSE }
+cols <- RColorBrewer::brewer.pal(length(unique(Pickin_data$Shift_Start_Time)), name = 'Set3') 
+Pickin_data$color <- factor(Pickin_data$Shift_Start_Time)
+
+Pickin_data$Shift_End_Time <- Pickin_data$Shift_End_Time + 1
+
+p <- plot_ly( hoverinfo = "text")
+  
+for(i in 1:(nrow(Pickin_data))){
+  p <- add_trace(p,
+                 x = c(Pickin_data$Shift_Start_Time[i], Pickin_data$Shift_End_Time[i]), 
+                 y =c(i),
+                 mode = "lines",
+                 line = list(color = Pickin_data$color[i], width = 20),
+                 showlegend = F,
+                 hoverinfo = "text",
+                 text = paste("Start: ", Pickin_data$Shift_Start_Time[i], "<br>",
+                              "End: ", Pickin_data$Shift_End_Time[i], "<br>",
+                              "Staff: ", Pickin_data$N_Staff[i], "<br>"),
+                 evaluate = T
+  ) %>%
+    layout(title = "Picking Shift Recommendation", 
+           xaxis = X, 
+           yaxis = Y,
+           hovermode = "X") %>%
+    config(displayModeBar = F)
+    
+}
+
+p
+```
+
+
+
+- Shift 1 through represent 4 disctinct start and end times for picking operations throughout the day for part time employees.
+
+- Each shift contains information about number of associated recommended for manning picking operations with the given shift period.
+
+- There are several time intervals where the shifts overlap. These are areas where the model suggests multiple picker from different shifts working simulteniously to efficiently meet order demands. 
+
+***
+***
+
+### Data
+
+```{r, echo=FALSE}
+Pickin_data %>% 
+  select(-color) %>%
+  datatable(rownames = FALSE, options = list(scrollX = TRUE, searching= FALSE, paging = FALSE, bInfo = FALSE,
+                                            class = 'cell-border stripe', columnDefs = list(list(className = 'dt-center'))))
+```
+
+
+```{r echo=FALSE}
+picking_activitiy <- picking_result %>% 
+  get_solution(x[i,j]) %>%
+  filter(value > 0) 
+picking_activitiy$value <- round(picking_activitiy$value,2)
+
+# knitr::kable(pick_num, "markdown")
+# Shift activity tell us what we need to do at each hour either picking or staging.
+```
+
+
+```{r}
+output_total <- tibble(
+Staff = c(sum(Pickin_data$N_Staff), sum(Staging_data$N_Staff), sum(Destaging_data$N_Staff)),
+               Hours =      c(sum(Pickin_data$N_Staff*(Pickin_data$Shift_End_Time-Pickin_data$Shift_Start_Time)),
+           sum(Staging_data$N_Staff*(Staging_data$Shift_End_Time - Staging_data$Shift_Start_Time)), 
+           sum(Destaging_data$N_Staff*(Destaging_data$Shift_End_Time - Destaging_data$Shift_Start_Time))))
+
+total_staff_hours <- colSums(output_total)
+output_total <- rbind(output_total, total_staff_hours)
+row.names(output_total) <- c('pick','stage','de-stage', 'total')
+knitr::kable(output_total, "markdown")
+
+```
+
+```{r}
+library(stringr)
+
+
+
+
+
+describe_part_full <- function(result){
+  # to add the FT/PT with the activity name based on the exsiting result
+  pt_ft <- as.character(substitute(result))
+  result$Job <- case_when(
+    (result$Shift_End_Time - result$Shift_Start_Time) >= 6 ~ str_c( "FT ",
+                       word(pt_ft, 1, sep = "\\_",)),
+   (result$Shift_End_Time - result$Shift_Start_Time)  < 6 ~ str_c( "PT ",
+                       word(pt_ft, 1, sep = "\\_",)),
+  )
+  return(result)
+}
+
+
+# Staging_data <- describe_part_full(Staging_data)
+
+# breakdown the starting time by pt/ft and start hour
+
+hour_start <- 3
+hour_end   <- 21
+
+breakdown_start_time <- function(result){
+  # the parameter has to contain column pt/ft description
+  result <- result %>% 
+    select(N_Staff, Shift_Start_Time, Shift_End_Time, Job) %>% 
+    group_by(Job) %>% 
+    mutate(Total_Staff = sum(N_Staff),
+           Total_Hours = sum(N_Staff *(Shift_End_Time + 1 -Shift_Start_Time)))
+  
+  # the begin and end of service hour
+  operation_hour <- tibble(Shift_Start_Time = seq(hour_start,hour_end))
+  
+  # map the scheduleing starting hour to the full operation hour 
+  breakdown_count <- operation_hour %>% 
+    left_join(
+      result %>% select(Shift_Start_Time, N_Staff, Job),
+      by = "Shift_Start_Time") %>% 
+    group_by(Shift_Start_Time, Job) %>%
+    summarise(N_Staff = sum(N_Staff)) %>% 
+    spread(Shift_Start_Time, N_Staff) %>% 
+    filter(Job != "NA") %>% 
+    # join the result table to get the total staff and hours
+    left_join(distinct(result[c("Job", "Total_Staff",  "Total_Hours")])) %>% 
+    # reorder the column
+    select(Job, Total_Staff,Total_Hours, everything())
+  
+  return(breakdown_count)
+  
+}
+ 
+
+breakdown_start_table <- map_df(
+  list(
+  describe_part_full(Pickin_data), 
+  describe_part_full(Staging_data),
+  describe_part_full(Destaging_data)
+  ),
+  breakdown_start_time)
+
+
+options(knitr.kable.NA = '')
+knitr::kable(breakdown_start_table, "markdown")
+```
+
+
+```{r}
+
+
+
+cumulate_hours <- function(data){
+  # data is result of the optimizaton model
+  # result <- describe_part_full(data)
+  hour  <- hour_start:hour_end
+  
+  total <- sapply(hour, function(i) 
+    sum(data$N_Staff[data$Shift_Start_Time <= i & data$Shift_End_Time >= i]))
+  output <- data.frame(hour, total) %>%  spread(hour, total)
+  
+  return(output)
+}
+
+cumulated_table <- map_df(list(
+                       Pickin_data,
+                       Staging_data,
+                       Destaging_data),
+                     cumulate_hours)
+
+cumulated_table <- cumulated_table %>% add_column(Job = c("Pick", "Stage", "Destage"), .before = "4")
+
+```
+```{r}
+pt_ft_start_table <- function(result){
+  
+    result <- result %>% 
+        mutate(Shift_Length = Shift_End_Time - Shift_Start_Time+1)
+      
+      # the begin and end of service hour
+      operation_hour <- tibble(Shift_Start_Time = seq(hour_start,hour_end))
+      
+      # map the scheduleing starting hour to the full operation hour 
+      breakdown_count <- operation_hour %>% 
+        left_join(
+          result %>% select(Job, Shift_Length, Shift_Start_Time, N_Staff),
+          by = "Shift_Start_Time") %>% 
+        spread(Shift_Start_Time, N_Staff ) %>% 
+        filter(Job != "NA")
+  return(result)  
+}
+  
+  
+
+```
+
